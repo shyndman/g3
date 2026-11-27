@@ -10,9 +10,10 @@ import (
 
 // Config holds all runtime settings for the G3 server.
 type Config struct {
-	Addr     string // panel + SPA listen address, e.g. ":8787"
-	S3Addr   string // S3-compatible API listen address, e.g. ":9000"
-	DataDir  string // directory for the SQLite metadata DB
+	Addr        string // panel + SPA listen address, e.g. ":8787"
+	S3Addr      string // S3-compatible API listen address, e.g. ":9000"
+	S3PublicURL string // optional external S3 endpoint URL shown in the panel
+	DataDir     string // directory for the SQLite metadata DB
 	DevMode  bool   // relaxes cookie Secure flag for plain-HTTP local use
 
 	AdminEmail    string // first-run seed admin email
@@ -43,6 +44,7 @@ func Load() Config {
 	return Config{
 		Addr:               getenv("G3_ADDR", DefaultAddr),
 		S3Addr:             getenv("G3_S3_ADDR", DefaultS3Addr),
+		S3PublicURL:        strings.TrimRight(getenv("G3_S3_PUBLIC_URL", ""), "/"),
 		DataDir:            getenv("G3_DATA_DIR", DefaultDataDir),
 		DevMode:            getenv("G3_DEV", "true") != "false",
 		AdminEmail:         getenv("G3_ADMIN_EMAIL", DefaultAdminEmail),

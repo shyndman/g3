@@ -8,7 +8,10 @@ import (
 	"g3/internal/store"
 )
 
-const s3ns = "http://s3.amazonaws.com/doc/2006-03-01/"
+const (
+	s3ns              = "http://s3.amazonaws.com/doc/2006-03-01/"
+	maxPolicyBodySize = 1 << 20
+)
 
 // aclXML is a single-owner FULL_CONTROL ACL (G3 is single-tenant; ACLs are
 // reported so clients' Permissions tabs work, but access is key-scoped).
@@ -70,7 +73,11 @@ func (s *Server) handleBucketSub(w http.ResponseWriter, r *http.Request, name, s
 			}
 			writeS3Error(w, http.StatusNotFound, "NoSuchBucketPolicy", "The bucket policy does not exist", name)
 		case http.MethodPut:
-			body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+			body, rerr := readBoundedVerifiedBody(r, maxPolicyBodySize)
+			if rerr != nil {
+				writeBoundedBodyError(w, rerr, name)
+				return
+			}
 			_ = s.store.SetBucketPolicy(b.ID, string(body))
 			w.WriteHeader(http.StatusNoContent)
 		case http.MethodDelete:
