@@ -23,5 +23,9 @@ cmds = [
   "cd server && CGO_ENABLED=0 GOTOOLCHAIN=auto go build -ldflags '-s -w' -o ../g3 ./cmd/g3",
 ]
 
+[variables]
+G3_ADDR = ":8787"
+G3_S3_ADDR = ":9000"
+
 [start]
 cmd = "./g3"

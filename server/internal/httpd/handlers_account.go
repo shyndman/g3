@@ -2,8 +2,10 @@ package httpd
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"g3/internal/auth"
 )
@@ -105,6 +107,25 @@ func (a *api) changePassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not update password")
 		return
 	}
+
+	// Rotate the current session and revoke every prior session so any token
+	// issued before the password change is invalidated immediately.
+	newToken, newHash := auth.NewSessionToken()
+	if err := a.store.CreateSession(user.ID, newHash, r.UserAgent(), clientIP(r),
+		time.Now().Add(sessionTTL)); err != nil {
+		log.Printf("[auth] password changed for user=%s but session rotation failed: %v", user.ID, err)
+		writeError(w, http.StatusInternalServerError, "could not rotate session")
+		return
+	}
+
+	if err := a.store.DeleteOtherSessions(user.ID, newHash); err != nil {
+		log.Printf("[auth] password changed for user=%s but revoking prior sessions failed: %v", user.ID, err)
+		writeError(w, http.StatusInternalServerError, "could not revoke prior sessions")
+		return
+	}
+
+	a.setSessionCookie(w, newToken)
+	log.Printf("[auth] password changed and prior sessions revoked for user=%s email=%s", user.ID, user.Email)
 	a.store.LogAuditFull("auth.password_change", user.ID, user.Email, "", "", clientIP(r))
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

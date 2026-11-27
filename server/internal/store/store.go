@@ -6,15 +6,26 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
 
 	"g3/internal/auth"
 )
+
+// retiredDefaultAdminPassword is the legacy sample password that must never be
+// accepted when seeding a fresh database.
+const retiredDefaultAdminPassword = "change-me-now"
+
+// ErrMissingAdminPassword is returned when initializing a fresh database
+// without a valid G3_ADMIN_PASSWORD configured.
+var ErrMissingAdminPassword = errors.New("G3_ADMIN_PASSWORD must be set (and not the retired default) to initialize a fresh database")
 
 // Store wraps the database handle and exposes typed queries.
 type Store struct {
@@ -210,6 +221,7 @@ func (s *Store) syncSystemAdminPermissions() error {
 func (s *Store) Close() error { return s.DB.Close() }
 
 // seedAdmin creates the Administrator role + admin user on a fresh database.
+// It fails if no admin password was provided via G3_ADMIN_PASSWORD.
 func (s *Store) seedAdmin(email, password string) error {
 	var count int
 	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count); err != nil {
@@ -217,6 +229,12 @@ func (s *Store) seedAdmin(email, password string) error {
 	}
 	if count > 0 {
 		return nil
+	}
+
+	trimmed := strings.TrimSpace(password)
+	if trimmed == "" || trimmed == retiredDefaultAdminPassword {
+		log.Printf("[store] refusing to initialize fresh database: G3_ADMIN_PASSWORD is missing or uses the retired default")
+		return ErrMissingAdminPassword
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -235,20 +253,22 @@ func (s *Store) seedAdmin(email, password string) error {
 	if err != nil {
 		return err
 	}
+
 	userID := auth.NewID()
 	if _, err := s.DB.Exec(
 		`INSERT INTO users (id, email, name, password_hash, must_change_password, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, 1, ?, ?)`,
+		 VALUES (?, ?, ?, ?, 0, ?, ?)`,
 		userID, email, "Administrator", hash, now, now,
 	); err != nil {
 		return err
 	}
+
 	if _, err := s.DB.Exec(
 		`INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)`, userID, roleID,
 	); err != nil {
 		return err
 	}
 
-	fmt.Printf("[g3] seeded admin account: %s (must change password on first login)\n", email)
+	log.Printf("[store] seeded initial administrator account email=%s", email)
 	return nil
 }
