@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"log"
 	"net/http"
 	"time"
 
@@ -223,11 +224,26 @@ func (a *api) deleteDriveAccount(w http.ResponseWriter, r *http.Request) {
 	if actor == nil {
 		return
 	}
+
 	id := r.PathValue("id")
+	if acc, err := a.store.DriveAccountByID(id); err == nil && a.drive != nil {
+		if refresh, derr := a.cipher.Decrypt(acc.RefreshToken); derr != nil {
+			log.Printf("[accounts] unlink id=%s email=%s: could not decrypt refresh token for revocation: %v",
+				id, acc.Email, derr)
+		} else if rerr := a.drive.Revoke(r.Context(), refresh); rerr != nil {
+			log.Printf("[accounts] unlink id=%s email=%s: Google token revocation failed (continuing local delete): %v",
+				id, acc.Email, rerr)
+		} else {
+			log.Printf("[accounts] unlink id=%s email=%s: revoked Google OAuth token", id, acc.Email)
+		}
+	}
+
 	if err := a.store.DeleteDriveAccount(id); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not remove account")
 		return
 	}
+
+	log.Printf("[accounts] unlinked Drive account id=%s by user=%s", id, actor.Email)
 	a.store.LogAuditFull("account.unlink", actor.ID, actor.Email, "drive_account", id, clientIP(r))
 	writeJSON(w, http.StatusOK, map[string]string{"id": id})
 }

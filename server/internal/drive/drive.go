@@ -6,6 +6,11 @@ package drive
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
@@ -14,11 +19,17 @@ import (
 )
 
 // folderName is the dedicated folder G3 creates in each account's Drive.
-const folderName = "G3 Storage"
+const (
+	folderName            = "G3 Storage"
+	defaultRevokeEndpoint = "https://oauth2.googleapis.com/revoke"
+	revokeTimeout         = 10 * time.Second
+)
 
 // Manager holds the shared OAuth config for linking and using Drive accounts.
 type Manager struct {
-	oauth *oauth2.Config
+	oauth      *oauth2.Config
+	revokeURL  string
+	httpClient *http.Client
 }
 
 // New builds a Manager. Drive linking is disabled until credentials are set.
@@ -31,7 +42,36 @@ func New(clientID, clientSecret, redirectURI string) *Manager {
 			Scopes:       []string{drive.DriveFileScope},
 			Endpoint:     google.Endpoint,
 		},
+		revokeURL:  defaultRevokeEndpoint,
+		httpClient: &http.Client{Timeout: revokeTimeout},
 	}
+}
+
+// SetRevokeEndpoint overrides the OAuth revocation URL (used in tests).
+func (m *Manager) SetRevokeEndpoint(u string) {
+	m.revokeURL = u
+}
+
+// Revoke asks Google's OAuth revocation endpoint to invalidate refreshToken.
+func (m *Manager) Revoke(ctx context.Context, refreshToken string) error {
+	form := url.Values{"token": {refreshToken}}.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.revokeURL, strings.NewReader(form))
+	if err != nil {
+		return fmt.Errorf("build revoke request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := m.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("revoke request: %w", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("revoke returned status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // Configured reports whether Google OAuth credentials are present.
