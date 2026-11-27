@@ -25,18 +25,28 @@ type Config struct {
 	GoogleRedirectURI  string
 }
 
+// Default listener addresses and runtime paths.
+const (
+	DefaultAddr       = "127.0.0.1:8787"
+	DefaultS3Addr     = "127.0.0.1:9000"
+	DefaultDataDir    = "./g3-data"
+	DefaultAdminEmail = "admin@g3.local"
+)
+
 // Load reads .env (if present) then the process environment, env taking
-// precedence. Unset values fall back to sensible defaults.
+// precedence. Unset values fall back to sensible defaults, except
+// G3_ADMIN_PASSWORD which has no default and must be supplied for first-run
+// initialization.
 func Load() Config {
 	loadDotEnv(".env")
 
 	return Config{
-		Addr:               getenv("G3_ADDR", ":8787"),
-		S3Addr:             getenv("G3_S3_ADDR", ":9000"),
-		DataDir:            getenv("G3_DATA_DIR", "./g3-data"),
+		Addr:               getenv("G3_ADDR", DefaultAddr),
+		S3Addr:             getenv("G3_S3_ADDR", DefaultS3Addr),
+		DataDir:            getenv("G3_DATA_DIR", DefaultDataDir),
 		DevMode:            getenv("G3_DEV", "true") != "false",
-		AdminEmail:         getenv("G3_ADMIN_EMAIL", "admin@g3.local"),
-		AdminPassword:      getenv("G3_ADMIN_PASSWORD", "change-me-now"),
+		AdminEmail:         getenv("G3_ADMIN_EMAIL", DefaultAdminEmail),
+		AdminPassword:      getenv("G3_ADMIN_PASSWORD", ""),
 		EncryptionKey:      getenv("G3_ENCRYPTION_KEY", ""),
 		GoogleClientID:     getenv("G3_GOOGLE_CLIENT_ID", ""),
 		GoogleClientSecret: getenv("G3_GOOGLE_CLIENT_SECRET", ""),

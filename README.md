@@ -87,8 +87,7 @@ bash build.sh   # next export -> embed -> go build -> ./g3.exe
 ./g3.exe        # panel http://localhost:8787 , S3 http://localhost:9000
 ```
 
-First run seeds an admin from `G3_ADMIN_EMAIL` / `G3_ADMIN_PASSWORD` (you'll be
-asked to change the password on first login).
+First run seeds an admin from `G3_ADMIN_EMAIL` / `G3_ADMIN_PASSWORD` (`G3_ADMIN_PASSWORD` is required on a fresh database).
 
 ## Configuration
 
@@ -97,11 +96,11 @@ All settings are environment variables (an optional `.env` is read too — see
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `G3_ADDR` | `:8787` | Panel + static UI listen address |
-| `G3_S3_ADDR` | `:9000` | S3-compatible API listen address |
+| `G3_ADDR` | `127.0.0.1:8787` | Panel + static UI listen address (`:8787` in Docker/Nixpacks) |
+| `G3_S3_ADDR` | `127.0.0.1:9000` | S3-compatible API listen address (`:9000` in Docker/Nixpacks) |
 | `G3_DATA_DIR` | `./g3-data` | Directory for the SQLite DB + encryption key |
 | `G3_ADMIN_EMAIL` | `admin@g3.local` | First-run admin email |
-| `G3_ADMIN_PASSWORD` | `change-me-now` | First-run admin password |
+| `G3_ADMIN_PASSWORD` | *(required on fresh DB)* | First-run admin password (no default) |
 | `G3_ENCRYPTION_KEY` | *(auto)* | base64 32-byte key for Drive tokens (auto-generated in the data dir if unset) |
 | `G3_GOOGLE_CLIENT_ID` | | Google OAuth client (Drive API) |
 | `G3_GOOGLE_CLIENT_SECRET` | | Google OAuth client secret |
