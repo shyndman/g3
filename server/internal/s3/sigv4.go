@@ -8,13 +8,30 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+)
+
+// SigV4 timing and payload constants.
+const (
+	sigV4MaxClockSkew = 15 * time.Minute
+	amzDateFormat     = "20060102T150405Z"
+	payloadUnsigned   = "UNSIGNED-PAYLOAD"
+	payloadStreaming  = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD"
+)
+
+// Sentinel errors returned by payload verification helpers.
+var (
+	errPayloadHashMismatch         = errors.New("X-Amz-Content-Sha256 mismatch")
+	errStreamingPayloadUnsupported = errors.New("streaming payload unsupported for this operation")
+	errBodyTooLarge                = errors.New("request body exceeds maximum allowed size")
 )
 
 // credential holds the parsed Authorization credential scope.
@@ -55,14 +72,36 @@ func parseAuthorization(header string) (*credential, error) {
 	return c, nil
 }
 
-// verifyV4 recomputes the SigV4 signature using secret and compares it.
-func verifyV4(r *http.Request, c *credential, secret string) bool {
+// verifyV4 enforces the SigV4 timestamp freshness window and verifies the
+// header-signed request signature.
+func verifyV4(r *http.Request, c *credential, secret string, now time.Time) (ok bool, skewed bool) {
+	amzDate := r.Header.Get("X-Amz-Date")
+	if isRequestTimeSkewed(amzDate, now) {
+		return false, true
+	}
+
 	payloadHash := r.Header.Get("X-Amz-Content-Sha256")
 	if payloadHash == "" {
-		payloadHash = "UNSIGNED-PAYLOAD"
+		payloadHash = payloadUnsigned
 	}
+
 	canonReq := canonicalRequest(r, c.signed, payloadHash, canonicalQuery(r.URL.RawQuery, ""))
-	return checkSignature(r.Header.Get("X-Amz-Date"), canonReq, c, secret)
+	return checkSignature(amzDate, canonReq, c, secret), false
+}
+
+// isRequestTimeSkewed reports whether an X-Amz-Date header is missing,
+// malformed, or outside the allowed ±15-minute SigV4 clock-skew window.
+func isRequestTimeSkewed(amzDate string, now time.Time) bool {
+	t, err := time.Parse(amzDateFormat, amzDate)
+	if err != nil {
+		return true
+	}
+
+	delta := now.UTC().Sub(t)
+	if delta < 0 {
+		delta = -delta
+	}
+	return delta > sigV4MaxClockSkew
 }
 
 func checkSignature(amzDate, canonReq string, c *credential, secret string) bool {
@@ -102,13 +141,13 @@ func verifyPresigned(r *http.Request, c *credential, secret string) (ok bool, ex
 	if expiredPresign(q.Get("X-Amz-Date"), q.Get("X-Amz-Expires")) {
 		return false, true
 	}
-	canonReq := canonicalRequest(r, c.signed, "UNSIGNED-PAYLOAD",
+	canonReq := canonicalRequest(r, c.signed, payloadUnsigned,
 		canonicalQuery(r.URL.RawQuery, "X-Amz-Signature"))
 	return checkSignature(q.Get("X-Amz-Date"), canonReq, c, secret), false
 }
 
 func expiredPresign(amzDate, expires string) bool {
-	t, err := time.Parse("20060102T150405Z", amzDate)
+	t, err := time.Parse(amzDateFormat, amzDate)
 	if err != nil {
 		return false // can't parse; let signature check decide
 	}
@@ -224,10 +263,83 @@ func deriveKey(secret, date, region, service string) []byte {
 // objectBody returns the real object byte stream, decoding aws-chunked framing
 // when the client used the STREAMING signature payload.
 func objectBody(r *http.Request) io.Reader {
-	if r.Header.Get("X-Amz-Content-Sha256") == "STREAMING-AWS4-HMAC-SHA256-PAYLOAD" {
+	if r.Header.Get("X-Amz-Content-Sha256") == payloadStreaming {
 		return &chunkedReader{br: bufio.NewReader(r.Body)}
 	}
 	return r.Body
+}
+
+// expectedPayloadDigest returns the lowercase hex SHA-256 digest from
+// X-Amz-Content-Sha256 when the request commits to a fixed payload hash.
+func expectedPayloadDigest(r *http.Request) (string, bool) {
+	h := strings.TrimSpace(r.Header.Get("X-Amz-Content-Sha256"))
+	if h == "" || h == payloadUnsigned || h == payloadStreaming {
+		return "", false
+	}
+	return strings.ToLower(h), true
+}
+
+// verifyingBody returns objectBody(r) wrapped in a streaming SHA-256 verifier
+// whenever the request carries a fixed X-Amz-Content-Sha256 digest.
+func verifyingBody(r *http.Request) io.Reader {
+	body := objectBody(r)
+	expected, ok := expectedPayloadDigest(r)
+	if !ok {
+		return body
+	}
+	return &sha256VerifyingReader{
+		r:        body,
+		h:        sha256.New(),
+		expected: expected,
+	}
+}
+
+// readBoundedVerifiedBody reads a bounded request body (such as batch-delete
+// XML or bucket policy JSON) through verifyingBody, rejecting streaming-chunked
+// mode, oversized payloads, digest mismatches, and any transport read error.
+func readBoundedVerifiedBody(r *http.Request, maxBytes int64) ([]byte, error) {
+	if r.Header.Get("X-Amz-Content-Sha256") == payloadStreaming {
+		log.Printf("[s3] rejected unsupported streaming payload on path=%s", r.URL.Path)
+		return nil, errStreamingPayloadUnsupported
+	}
+
+	raw, err := io.ReadAll(io.LimitReader(verifyingBody(r), maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(raw)) > maxBytes {
+		log.Printf("[s3] rejected oversized request body path=%s limit=%d", r.URL.Path, maxBytes)
+		return nil, errBodyTooLarge
+	}
+
+	return raw, nil
+}
+
+// sha256VerifyingReader hashes bytes as they stream through and fails at EOF
+// with errPayloadHashMismatch if the digest disagrees with expected.
+type sha256VerifyingReader struct {
+	r        io.Reader
+	h        hash.Hash
+	expected string
+	verified bool
+}
+
+func (v *sha256VerifyingReader) Read(p []byte) (int, error) {
+	n, err := v.r.Read(p)
+	if n > 0 {
+		_, _ = v.h.Write(p[:n])
+	}
+
+	if err == io.EOF && !v.verified {
+		v.verified = true
+		actual := hex.EncodeToString(v.h.Sum(nil))
+		if subtle.ConstantTimeCompare([]byte(actual), []byte(v.expected)) != 1 {
+			log.Printf("[s3] rejected request: payload SHA-256 mismatch expected=%s actual=%s", v.expected, actual)
+			return n, errPayloadHashMismatch
+		}
+	}
+
+	return n, err
 }
 
 // chunkedReader strips aws-chunked framing: each chunk is
