@@ -34,7 +34,7 @@ var (
 	errBodyTooLarge                = errors.New("request body exceeds maximum allowed size")
 )
 
-// credential holds the parsed Authorization credential scope.
+// credential holds the parsed Authorization or presigned query credential scope.
 type credential struct {
 	accessKeyID string
 	date        string // YYYYMMDD
@@ -42,6 +42,17 @@ type credential struct {
 	service     string
 	signed      []string
 	signature   string
+	presigned   bool
+}
+
+// signedHeader reports whether name was included in the SigV4 SignedHeaders list.
+func (c *credential) signedHeader(name string) bool {
+	for _, h := range c.signed {
+		if strings.EqualFold(h, name) {
+			return true
+		}
+	}
+	return false
 }
 
 // parseAuthorization parses an AWS4-HMAC-SHA256 Authorization header.
@@ -131,6 +142,7 @@ func parsePresignedQuery(q url.Values) (*credential, bool) {
 		accessKeyID: scope[0], date: scope[1], region: scope[2], service: scope[3],
 		signed:    strings.Split(q.Get("X-Amz-SignedHeaders"), ";"),
 		signature: q.Get("X-Amz-Signature"),
+		presigned: true,
 	}
 	return c, c.accessKeyID != "" && len(c.signed) > 0
 }

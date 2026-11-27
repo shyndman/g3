@@ -36,7 +36,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case key == "":
 		s.bucketOp(w, r, bucketName)
 	default:
-		s.objectOp(w, r, bucketName, key)
+		s.objectOp(w, r, cred, bucketName, key)
 	}
 }
 
@@ -273,7 +273,7 @@ func (s *Server) deleteObjects(w http.ResponseWriter, r *http.Request, name stri
 
 // --- object-level ---
 
-func (s *Server) objectOp(w http.ResponseWriter, r *http.Request, name, key string) {
+func (s *Server) objectOp(w http.ResponseWriter, r *http.Request, cred *credential, name, key string) {
 	b, err := s.store.BucketByName(name)
 	if err != nil {
 		writeS3Error(w, http.StatusNotFound, "NoSuchBucket", "", name)
@@ -308,6 +308,13 @@ func (s *Server) objectOp(w http.ResponseWriter, r *http.Request, name, key stri
 	case http.MethodPut:
 		// A copy source turns the PUT into a server-side copy: no body follows.
 		if src := r.Header.Get("X-Amz-Copy-Source"); src != "" {
+			if cred.presigned && !cred.signedHeader("x-amz-copy-source") {
+				log.Printf("[s3] rejected presigned PUT with unsigned x-amz-copy-source key=%s dst=%s/%s",
+					cred.accessKeyID, name, key)
+				writeS3Error(w, http.StatusForbidden, "AccessDenied",
+					"x-amz-copy-source must be signed on presigned requests", key)
+				return
+			}
 			s.copyObject(w, r, b, key, src)
 			return
 		}
