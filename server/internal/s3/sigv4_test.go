@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -327,4 +328,94 @@ func TestPutPolicyRejectsReadErrorAndOversizedBody(t *testing.T) {
 			t.Fatalf("expected original policy intact, got %q (ok=%v)", got, ok)
 		}
 	})
+}
+
+func presignPutRequest(rawURL, accessKey, secret string, signedHeaders []string, extraHeaders map[string]string, ts time.Time) *http.Request {
+	u, _ := url.Parse(rawURL)
+	amzDate := ts.UTC().Format(amzDateFormat)
+	shortDate := ts.UTC().Format("20060102")
+	scope := fmt.Sprintf("%s/us-east-1/s3/aws4_request", shortDate)
+
+	q := u.Query()
+	q.Set("X-Amz-Algorithm", "AWS4-HMAC-SHA256")
+	q.Set("X-Amz-Credential", accessKey+"/"+scope)
+	q.Set("X-Amz-Date", amzDate)
+	q.Set("X-Amz-Expires", "300")
+	q.Set("X-Amz-SignedHeaders", strings.Join(signedHeaders, ";"))
+	u.RawQuery = q.Encode()
+
+	req := httptest.NewRequest(http.MethodPut, u.String(), nil)
+	for k, v := range extraHeaders {
+		req.Header.Set(k, v)
+	}
+
+	canonReq := canonicalRequest(req, signedHeaders, payloadUnsigned, canonicalQuery(req.URL.RawQuery, "X-Amz-Signature"))
+	stringToSign := strings.Join([]string{
+		"AWS4-HMAC-SHA256",
+		amzDate,
+		scope,
+		hashHex([]byte(canonReq)),
+	}, "\n")
+
+	signingKey := deriveKey(secret, shortDate, "us-east-1", "s3")
+	sig := hex.EncodeToString(hmacSHA256(signingKey, stringToSign))
+	q.Set("X-Amz-Signature", sig)
+	req.URL.RawQuery = q.Encode()
+	return req
+}
+
+func TestPresignedPutRejectsUnsignedCopySource(t *testing.T) {
+	srv, st, ak, secret := newTestS3Server(t)
+
+	if _, err := st.CreateBucket("uploads"); err != nil {
+		t.Fatalf("CreateBucket uploads: %v", err)
+	}
+	secretBucketID, err := st.CreateBucket("secrets")
+	if err != nil {
+		t.Fatalf("CreateBucket secrets: %v", err)
+	}
+	if err := st.PutObject(store.ObjectWrite{
+		BucketID: secretBucketID, Key: "private.txt", Size: 5, ETag: "abc", ContentType: "text/plain",
+	}); err != nil {
+		t.Fatalf("PutObject: %v", err)
+	}
+
+	// Presigned upload URL only signs "host"; attacker adds X-Amz-Copy-Source.
+	req := presignPutRequest("http://s3.local/uploads/stolen.txt", ak, secret, []string{"host"}, nil, time.Now())
+	req.Header.Set("X-Amz-Copy-Source", "/secrets/private.txt")
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "AccessDenied") {
+		t.Fatalf("expected AccessDenied, got %s", rec.Body.String())
+	}
+}
+
+func TestPresignedPutAllowsSignedCopySource(t *testing.T) {
+	srv, st, ak, secret := newTestS3Server(t)
+
+	if _, err := st.CreateBucket("uploads"); err != nil {
+		t.Fatalf("CreateBucket uploads: %v", err)
+	}
+
+	// When x-amz-copy-source is explicitly signed, the guard allows it through
+	// to copyObject (which returns 404 NoSuchBucket for the missing source).
+	req := presignPutRequest(
+		"http://s3.local/uploads/dest.txt",
+		ak, secret,
+		[]string{"host", "x-amz-copy-source"},
+		map[string]string{"X-Amz-Copy-Source": "/missing/obj.txt"},
+		time.Now(),
+	)
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 NoSuchBucket (past auth guard), got %d: %s", rec.Code, rec.Body.String())
+	}
 }
