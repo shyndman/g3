@@ -15,6 +15,9 @@ binary**: the Go server embeds a polished web panel.
 
 ---
 
+> [!NOTE]
+> **About this fork:** Forked for personal self-hosted use with targeted security hardening (tighter first-run defaults, SigV4 request verification, and OAuth token revocation). See the git history for details.
+
 ## Why
 
 Plenty of old software can only export to **S3** — but you may not want to pay for
