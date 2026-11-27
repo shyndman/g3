@@ -18,6 +18,8 @@ export interface AuthUser {
   roles: { id: string; name: string }[];
   /** True if this account is the only remaining administrator. */
   isLastAdmin: boolean;
+  /** Optional external S3 endpoint URL configured via G3_S3_PUBLIC_URL. */
+  s3Endpoint: string;
 }
 
 const AuthContext = createContext<AuthUser | null>(null);

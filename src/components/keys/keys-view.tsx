@@ -4,6 +4,7 @@ import { Delete02Icon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useTranslations } from "next-intl";
 import { useEffect, useState } from "react";
+import { useAuth } from "@/components/auth/auth-context";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -49,11 +50,16 @@ export function KeysView({ permissions }: { permissions: string[] }) {
   const canWrite = permissions.includes("storage.write");
   const [created, setCreated] = useState<CreatedKeyDTO | null>(null);
   const [toDelete, setToDelete] = useState<AccessKeyDTO | null>(null);
-  const [endpoint, setEndpoint] = useState("");
+  const { s3Endpoint } = useAuth();
+  const [endpoint, setEndpoint] = useState(s3Endpoint);
 
   useEffect(() => {
+    if (s3Endpoint) {
+      setEndpoint(s3Endpoint);
+      return;
+    }
     setEndpoint(`http://${window.location.hostname}:9000`);
-  }, []);
+  }, [s3Endpoint]);
 
   async function submitCreate() {
     try {

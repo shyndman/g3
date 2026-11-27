@@ -1,9 +1,11 @@
 package s3
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -11,6 +13,8 @@ import (
 
 	"g3/internal/store"
 )
+
+const maxDeleteBodyBytes = 4 << 20 // 4 MiB ceiling for S3 batch delete XML payloads
 
 // ServeHTTP authenticates the request (SigV4, header or presigned query) and
 // dispatches the S3 operation.
@@ -75,7 +79,15 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (*credenti
 		return cred, true
 	}
 
-	if !verifyV4(r, cred, secret) {
+	valid, skewed := verifyV4(r, cred, secret, time.Now())
+	if skewed {
+		log.Printf("[s3] rejected skewed SigV4 request key=%s date=%q path=%s",
+			cred.accessKeyID, r.Header.Get("X-Amz-Date"), r.URL.Path)
+		writeS3Error(w, http.StatusForbidden, "RequestTimeTooSkewed",
+			"The difference between the request time and the current time is too large.", r.URL.Path)
+		return nil, false
+	}
+	if !valid {
 		writeS3Error(w, http.StatusForbidden, "SignatureDoesNotMatch", "Signature mismatch", r.URL.Path)
 		return nil, false
 	}
@@ -212,17 +224,45 @@ func (s *Server) listObjects(w http.ResponseWriter, r *http.Request, name string
 	writeXML(w, http.StatusOK, out)
 }
 
+func writePayloadMismatch(w http.ResponseWriter, resource string) {
+	writeS3Error(w, http.StatusBadRequest, "XAmzContentSHA256Mismatch",
+		"The provided 'x-amz-content-sha256' header does not match what was computed.", resource)
+}
+
+func writeBoundedBodyError(w http.ResponseWriter, err error, resource string) {
+	switch {
+	case errors.Is(err, errPayloadHashMismatch):
+		writePayloadMismatch(w, resource)
+	case errors.Is(err, errStreamingPayloadUnsupported):
+		writeS3Error(w, http.StatusBadRequest, "InvalidArgument",
+			"STREAMING-AWS4-HMAC-SHA256-PAYLOAD is not supported for this operation.", resource)
+	case errors.Is(err, errBodyTooLarge):
+		writeS3Error(w, http.StatusBadRequest, "MaxMessageLengthExceeded",
+			"Your request was too big.", resource)
+	default:
+		writeS3Error(w, http.StatusBadRequest, "IncompleteBody", err.Error(), resource)
+	}
+}
+
 func (s *Server) deleteObjects(w http.ResponseWriter, r *http.Request, name string) {
 	b, err := s.store.BucketByName(name)
 	if err != nil {
 		writeS3Error(w, http.StatusNotFound, "NoSuchBucket", "", name)
 		return
 	}
+
+	raw, err := readBoundedVerifiedBody(r, maxDeleteBodyBytes)
+	if err != nil {
+		writeBoundedBodyError(w, err, name)
+		return
+	}
+
 	var req deleteRequest
-	if err := decodeXML(r.Body, &req); err != nil {
+	if err := decodeXML(bytes.NewReader(raw), &req); err != nil {
 		writeS3Error(w, http.StatusBadRequest, "MalformedXML", err.Error(), name)
 		return
 	}
+
 	out := deleteResult{}
 	for _, obj := range req.Objects {
 		_ = s.DeleteObject(r.Context(), b, obj.Key)
@@ -292,7 +332,11 @@ func (s *Server) putObject(w http.ResponseWriter, r *http.Request, b *store.Buck
 	if ct == "" {
 		ct = "application/octet-stream"
 	}
-	etag, err := s.PutObject(r.Context(), b, key, ct, userMetadataJSON(r.Header), objectBody(r))
+	etag, err := s.PutObject(r.Context(), b, key, ct, userMetadataJSON(r.Header), verifyingBody(r))
+	if errors.Is(err, errPayloadHashMismatch) {
+		writePayloadMismatch(w, key)
+		return
+	}
 	if err != nil {
 		writeS3Error(w, http.StatusInternalServerError, "InternalError", err.Error(), key)
 		return
@@ -414,7 +458,11 @@ func (s *Server) uploadPart(w http.ResponseWriter, r *http.Request, _ *store.Buc
 		writeS3Error(w, http.StatusBadRequest, "InvalidArgument", "bad partNumber", uploadID)
 		return
 	}
-	etag, err := s.UploadPart(r.Context(), mu, partNum, objectBody(r))
+	etag, err := s.UploadPart(r.Context(), mu, partNum, verifyingBody(r))
+	if errors.Is(err, errPayloadHashMismatch) {
+		writePayloadMismatch(w, uploadID)
+		return
+	}
 	if err != nil {
 		writeS3Error(w, http.StatusInternalServerError, "InternalError", err.Error(), uploadID)
 		return

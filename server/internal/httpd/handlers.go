@@ -152,6 +152,7 @@ type meResponse struct {
 	Permissions          []string          `json:"permissions"`
 	Roles                []meRole          `json:"roles"`
 	IsLastAdmin          bool              `json:"isLastAdmin"`
+	S3Endpoint           string            `json:"s3Endpoint"`
 }
 
 type meRole struct {
@@ -205,5 +206,6 @@ func (a *api) me(w http.ResponseWriter, r *http.Request) {
 		Permissions:          perms,
 		Roles:                roleDTOs,
 		IsLastAdmin:          lastAdmin,
+		S3Endpoint:           a.cfg.S3PublicURL,
 	})
 }
