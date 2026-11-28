@@ -114,6 +114,28 @@ To link Google accounts: create an OAuth client in the Google Cloud Console with
 the **Drive API** enabled, set the three `G3_GOOGLE_*` vars, then use **Storage →
 Accounts → Add Google account** in the panel.
 
+## Prometheus metrics
+
+`GET /metrics` is available without authentication on the panel listener
+(`G3_ADDR`), not on the S3 listener. Anyone who can reach that route can read the
+metrics. If the panel is exposed publicly, restrict access to `/metrics` at your
+reverse proxy if those values should stay private.
+
+```yaml
+scrape_configs:
+  - job_name: g3
+    static_configs:
+      - targets: ["127.0.0.1:8787"]
+```
+
+Scrapes read only local metadata and report bucket and object counts, S3 object
+bytes, Drive account counts, stored Drive usage and quota, and G3 bytes per
+account. Drive usage includes files G3 didn't create, and the stored values are
+not live Drive readings. G3 bytes per account include completed objects and
+staged multipart parts; S3 object bytes exclude staged parts. The only
+per-account label is `account_id`. If collection fails, the endpoint returns
+HTTP 500 without samples.
+
 ## Using the S3 API
 
 Create an access key in **Storage → Access Keys**, then point any S3 tool at

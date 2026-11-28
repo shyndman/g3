@@ -52,6 +52,11 @@ func (s *Store) ListDriveAccounts() ([]DriveAccount, error) {
 	return items, rows.Err()
 }
 
+// DriveAccountIDs lists all linked account IDs in stable order.
+func (s *Store) DriveAccountIDs() ([]string, error) {
+	return s.scanStrings(`SELECT id FROM drive_accounts ORDER BY id`)
+}
+
 // DriveAccountByEmail looks up an account by email, including its refresh token.
 func (s *Store) DriveAccountByEmail(email string) (*DriveAccount, error) {
 	var a DriveAccount

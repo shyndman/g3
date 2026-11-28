@@ -33,6 +33,8 @@ func New(cfg config.Config, st *store.Store, cipher *crypto.Cipher, driveMgr *dr
 	a := &api{store: st, cfg: cfg, cipher: cipher, drive: driveMgr, engine: engine}
 	mux := http.NewServeMux()
 
+	mux.HandleFunc("GET /metrics", a.getMetrics)
+
 	// Panel API — auth + session.
 	mux.HandleFunc("GET /api/health", a.health)
 	mux.HandleFunc("POST /api/auth/login", a.login)

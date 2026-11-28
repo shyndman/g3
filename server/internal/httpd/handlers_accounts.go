@@ -37,7 +37,7 @@ func (a *api) listAccounts(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not list accounts")
 		return
 	}
-	usage, err := a.engine.UsageByAccount()
+	usage, err := a.store.UsageByAccount(store.SkipUnreadableManifests)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not measure usage")
 		return

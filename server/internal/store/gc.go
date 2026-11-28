@@ -56,35 +56,54 @@ func (s *Store) scanStrings(query string, args ...any) ([]string, error) {
 	return out, rows.Err()
 }
 
-// UsageByAccount sums the bytes each account holds for objects backed by a
-// single Drive file, plus any parts staged by an upload in progress. Bytes of
-// multipart objects sit in their manifests and are added by the caller.
-func (s *Store) UsageByAccount() (map[string]int64, error) {
-	usage := map[string]int64{}
-	queries := []string{
-		`SELECT account_id, SUM(size) FROM objects
-		 WHERE account_id IS NOT NULL GROUP BY account_id`,
-		`SELECT account_id, SUM(size) FROM multipart_parts GROUP BY account_id`,
+// ManifestReadMode controls whether usage can be reported with unreadable manifests.
+type ManifestReadMode bool
+
+const (
+	SkipUnreadableManifests   ManifestReadMode = false
+	FailOnUnreadableManifests ManifestReadMode = true
+)
+
+// UsageByAccount sums G3's single-file objects, completed multipart objects,
+// and staged parts in one SQLite snapshot. Completion writes the manifest
+// before deleting the staged rows, so the manifest takes precedence by file ID.
+func (s *Store) UsageByAccount(mode ManifestReadMode) (map[string]int64, error) {
+	// a, f, and s are the account ID, Drive file ID, and size in s3.manifestPart.
+	rows, err := s.DB.Query(`
+		WITH completed_parts(account_id, drive_file_id, size) AS MATERIALIZED (
+			SELECT part.value ->> '$.a', part.value ->> '$.f', part.value ->> '$.s'
+			FROM objects CROSS JOIN json_each(
+				CASE WHEN ? OR json_valid(objects.parts) THEN objects.parts END
+			) AS part
+			WHERE part.type = 'object'
+		), backing_bytes(account_id, size) AS (
+			SELECT account_id, size FROM objects WHERE account_id IS NOT NULL
+			UNION ALL
+			SELECT account_id, size FROM completed_parts WHERE account_id IS NOT NULL
+			UNION ALL
+			SELECT account_id, size FROM multipart_parts
+			WHERE drive_file_id NOT IN (
+				SELECT drive_file_id FROM completed_parts WHERE drive_file_id IS NOT NULL
+			)
+		)
+		SELECT account_id, SUM(size) FROM backing_bytes GROUP BY account_id
+	`, mode)
+	if err != nil {
+		return nil, err
 	}
-	for _, q := range queries {
-		rows, err := s.DB.Query(q)
-		if err != nil {
+	defer rows.Close()
+
+	usage := make(map[string]int64)
+	for rows.Next() {
+		var id string
+		var size int64
+		if err := rows.Scan(&id, &size); err != nil {
 			return nil, err
 		}
-		for rows.Next() {
-			var id string
-			var sum int64
-			if err := rows.Scan(&id, &sum); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			usage[id] += sum
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return nil, err
-		}
+		usage[id] = size
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return usage, nil
 }
